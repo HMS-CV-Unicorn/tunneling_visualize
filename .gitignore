@@ -1,0 +1,16 @@
+# Claude Code 用の指示ファイル（公開しない）
+CLAUDE.md
+.claude/
+
+# 教科書・資料（著作物なので公開リポジトリに入れない）
+*.pdf
+*.pptx
+*.potx
+
+# Python の仮想環境・キャッシュ
+.venv/
+__pycache__/
+.pytest_cache/
+
+# macOS
+.DS_Store
