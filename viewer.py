@@ -80,6 +80,7 @@ SLIDER_SPECS = {
     "width": ("幅 a [nm]", 0.05, 3.0, 0.50, 0.05),
     "count": ("個数 N", 0, 5, 1, 1),
     "gap": ("間隔 b [nm]", 0.05, 5.0, 1.00, 0.05),
+    "mass": ("有効質量 m*/m₀", 0.01, 2.0, 1.00, 0.01),  # 1 なら自由電子。半導体中の電子なら 0.1 程度
 }
 
 
@@ -175,7 +176,7 @@ def parse_parameter(key: str, text: str) -> float:
         raise ValueError(f"{name}: 有限の数値を入れてください")
     if key == "energy" and value < ENERGY_FLOOR:
         raise ValueError(f"{name}: 0 より大きくしてください（左端は V = 0 なので、入射するには E > 0 が必要）")
-    if key in ("width", "gap") and value <= 0:
+    if key in ("width", "gap", "mass") and value <= 0:
         raise ValueError(f"{name}: 0 より大きくしてください")
     if key == "count":
         if value < 0 or value != int(value):
@@ -317,7 +318,7 @@ def build_viewer():
     # スライダーと、その右の数値入力欄（TextBox = 文字を打ち込める欄）
     sliders, boxes = {}, {}
     for row, (key, (label, vmin, vmax, vinit, vstep)) in enumerate(SLIDER_SPECS.items()):
-        y = 0.13 - 0.028 * row
+        y = 0.135 - 0.025 * row
         sliders[key] = Slider(fig.add_axes((0.20, y, 0.56, 0.02)), label, vmin, vmax, valinit=vinit, valstep=vstep)
         sliders[key].valtext.set_visible(False)  # 値はスライダー横の文字ではなく入力欄に出す
         boxes[key] = TextBox(fig.add_axes((0.79, y - 0.003, 0.09, 0.026)), "", initial=format_parameter(key, vinit))
@@ -420,7 +421,7 @@ def build_viewer():
         energy = params["energy"]
         x_min, x_max = x_range(boundaries)
 
-        result = sc.solve_scattering(energy, boundaries, potentials)
+        result = sc.solve_scattering(energy, boundaries, potentials, params["mass"])
         x = np.linspace(x_min, x_max, N_POINTS)
         phi = sc.wavefunction(x, result)
         right, left = sc.traveling_components(x, result)
@@ -473,7 +474,7 @@ def build_viewer():
         params = current_params()
         boundaries, potentials = build_potential(state["mode"], params)
         energies = spectrum_energies(*ax_spec.get_xlim())
-        reflectances, transmittances = sc.spectrum(energies, boundaries, potentials)
+        reflectances, transmittances = sc.spectrum(energies, boundaries, potentials, params["mass"])
         line_t.set_data(energies, transmittances)
         line_r.set_data(energies, reflectances)
         marker_height.set_xdata([params["height"]] * 2)
@@ -605,7 +606,7 @@ def build_viewer():
     log_check.on_clicked(on_log_toggle)
     radio.on_clicked(on_mode_change)
     sliders["energy"].on_changed(on_energy_change)
-    for key in ("height", "width", "count", "gap"):
+    for key in ("height", "width", "count", "gap", "mass"):
         # key=key は「この行を実行した時点の key を覚えておく」ための書き方（ないと全部最後の key になる）
         sliders[key].on_changed(lambda _value, key=key: on_potential_change(key))
     for key, box in boxes.items():

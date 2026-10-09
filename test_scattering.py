@@ -273,3 +273,108 @@ def test_component_amplitudes_are_incident_reflected_transmitted():
     assert np.abs(left_l) == pytest.approx(np.full(50, math.sqrt(result.reflectance)), rel=1e-12)
     assert np.abs(right_r) == pytest.approx(np.full(50, math.sqrt(result.transmittance)), rel=1e-12)
     assert np.abs(left_r) == pytest.approx(np.zeros(50), abs=1e-15)
+    
+
+#----------------------------------------------------------------------------
+# 10. その他の解析解について調べる
+#----------------------------------------------------------------------------
+"""
+バリアの高さ: 500meV
+バリア幅: 20å
+井戸幅（バリア間隔): 50å
+有効質量を全領域において0.1m0とする
+
+すると
+共鳴準位
+1つ目: 81.193meV
+2つ目; 310.822meV
+
+になるか確認したい
+"""
+
+# 単位の換算: このプログラムは eV と nm で計算するので、meV と Å を換算して渡す
+MEV = 1e-3  # 1 meV = 10^-3 eV
+ANGSTROM = 0.1  # 1 Å = 0.1 nm
+
+REF_HEIGHT = 500 * MEV
+REF_WIDTH = 20 * ANGSTROM
+REF_GAP = 50 * ANGSTROM
+REF_MASS = 0.1  # 有効質量 m*/m₀
+REF_LEVELS_MEV = (81.193, 310.822)  # 参照した値
+# このプログラム（CODATA の ħc, m₀c² を使用）で求めた値。find_resonances で 10^-12 eV まで絞り込んだもの
+CODATA_LEVELS_MEV = (80.629867, 308.717746)
+
+
+def reference_potential():
+    return sc.barrier_array(2, REF_HEIGHT, REF_WIDTH, REF_GAP)
+
+
+def test_reference_resonance_levels():
+    """
+    バリアの下（0 < E < 500 meV）にある共鳴準位は2つで、CODATA 定数での値は 80.630 meV と 308.718 meV。
+    参照値 81.193 / 310.822 meV とは約 0.69% ずれる（原因は次のテストを参照）。ずれは 1% 未満であることを確認する。
+    """
+    levels = sc.find_resonances(*reference_potential(), 0.1 * MEV, REF_HEIGHT, mass_ratio=REF_MASS)
+    levels_mev = [e / MEV for e in levels]
+    assert levels_mev == pytest.approx(CODATA_LEVELS_MEV, abs=1e-5)
+    for ours, ref in zip(levels_mev, REF_LEVELS_MEV):
+        assert abs(ours / ref - 1) < 0.01
+
+
+def test_reference_resonances_transmit_fully():
+    """共鳴エネルギーでは T = 1, R = 0（左右対称な2重障壁なので完全透過）。R + T = 1 も成り立つ"""
+    for level in CODATA_LEVELS_MEV:
+        result = sc.solve_scattering(level * MEV, *reference_potential(), mass_ratio=REF_MASS)
+        assert result.transmittance == pytest.approx(1.0, abs=1e-9)
+        assert result.reflectance == pytest.approx(0.0, abs=1e-9)
+        assert result.reflectance + result.transmittance == pytest.approx(1.0, abs=1e-12)
+
+
+def test_reference_difference_is_one_constant_factor(monkeypatch):
+    """
+    参照値とのずれの原因の確認。ħ²/2m の値を1つの倍率 s で変えたとき、
+    「1つ目の準位が 81.193 meV に合う s」で2つ目の準位も 310.822 meV に合うなら、
+    ずれは計算方法やポテンシャルの形の違いではなく、物理定数（ħ, m₀ の値の丸め方など）の違いだと言える。
+    結果: s ≈ 1.00997（ħ²/2m₀ ≈ 3.848 eV·Å²。CODATA では 3.810 eV·Å²）、または m* ≈ 0.0990 m₀ に相当する。
+
+    monkeypatch は pytest の機能で、テストの間だけ定数を書き換え、終わったら元に戻してくれる。
+    """
+    base = sc.HBAR2_OVER_2M
+
+    def levels_with_scale(scale):
+        monkeypatch.setattr(sc, "HBAR2_OVER_2M", base * scale)
+        windows = ((70 * MEV, 90 * MEV), (290 * MEV, 330 * MEV))  # 各準位の付近だけ探して速くする
+        return [
+            sc.find_resonances(*reference_potential(), low, high, mass_ratio=REF_MASS, points=201)[0] / MEV
+            for low, high in windows
+        ]
+
+    # 二分法: 1つ目の準位が参照値に一致する倍率 s を探す（準位は s が大きいほど高くなる）
+    low, high = 1.0, 1.02
+    for _ in range(40):
+        middle = (low + high) / 2
+        if levels_with_scale(middle)[0] < REF_LEVELS_MEV[0]:
+            low = middle
+        else:
+            high = middle
+    scale = (low + high) / 2
+    first, second = levels_with_scale(scale)
+
+    assert scale == pytest.approx(1.00997, abs=1e-4)
+    assert first == pytest.approx(REF_LEVELS_MEV[0], abs=1e-3)
+    assert second == pytest.approx(REF_LEVELS_MEV[1], abs=5e-3)  # 2つ目も、合わせていないのに一致する
+
+
+def test_effective_mass_equals_stretched_lengths():
+    """
+    mass_ratio の実装の確認。k = √(2m(E−V))/ħ なので、質量を m 倍にすることは、
+    長さ（幅・間隔）を √m 倍にすることと同じ（kx の組み合わせでしか効かないため）。
+        T(E; 幅 a, 間隔 b, 質量 m) = T(E; 幅 √m·a, 間隔 √m·b, 質量 1)
+    """
+    m = REF_MASS
+    for energy in (0.05, 0.2, 0.7):
+        with_mass = sc.solve_scattering(energy, *reference_potential(), mass_ratio=m)
+        stretched = sc.solve_scattering(
+            energy, *sc.barrier_array(2, REF_HEIGHT, math.sqrt(m) * REF_WIDTH, math.sqrt(m) * REF_GAP)
+        )
+        assert with_mass.transmittance == pytest.approx(stretched.transmittance, rel=1e-10)

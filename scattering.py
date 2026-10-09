@@ -136,9 +136,13 @@ def potential_profile(x, boundaries, potentials) -> np.ndarray:
 # 各領域の解
 # ---------------------------------------------------------------------------
 
-def wave_number(energy: float, potential: float) -> complex:
+def wave_number(energy: float, potential: float, mass_ratio: float = 1.0) -> complex:
     """
         領域の波数 k = √(2m(E − V)) / ħ を返す関数。
+
+        mass_ratio は質量 m を電子の質量 m₀ の何倍とするか（m = mass_ratio × m₀）。省略すると 1（自由電子）。
+        半導体中の電子のように「有効質量」m* を使うときは m*/m₀ を渡す。
+        式の形は変わらず、m が置き換わるだけ: 2m/ħ² = mass_ratio × (2m₀/ħ²) = mass_ratio / (ħ²/2m₀)
 
         E > V : k は実数で、k = √(2m(E − V)) / ħがそのまま計算される 教科書 (5.2)(5.4)(5.36)
         E < V : k = iρ（純虚数）, ρ = √(2m(V − E)) / ħ。       教科書 (5.15)(5.24)
@@ -146,7 +150,7 @@ def wave_number(energy: float, potential: float) -> complex:
     """
     # complex(...) にしておくと、負の数の平方根が i√|…| として計算される（虚部 +0 なので +i 側になる）
     # そのためE,Vの大小で場合分けは不要になっている。勝手に E < V のときは k = iρ となる。
-    return cmath.sqrt(complex((energy - potential) / HBAR2_OVER_2M))
+    return cmath.sqrt(complex((energy - potential) * mass_ratio / HBAR2_OVER_2M))
 
 
 def _basis(k: complex, x_local):
@@ -191,7 +195,7 @@ def _region_origins(boundaries: tuple[float, ...]) -> tuple[float, ...]:
 # ---------------------------------------------------------------------------
 # 連続条件を並べて解く
 # ---------------------------------------------------------------------------
-def solve_scattering(energy: float, boundaries, potentials) -> Scattering:
+def solve_scattering(energy: float, boundaries, potentials, mass_ratio: float = 1.0) -> Scattering:
     """
     エネルギー energy [eV] の電子を左から入射させたときの波動関数の係数と R, T を求める。
 
@@ -199,6 +203,8 @@ def solve_scattering(energy: float, boundaries, potentials) -> Scattering:
       energy     : 入射電子のエネルギー E [eV]。左端の領域のポテンシャルより大きくなければならない
       boundaries : 境界の位置 [nm]（左から順、M 個）
       potentials : 各領域のポテンシャル [eV]（M+1 個）
+      mass_ratio : 質量 m / 電子の質量 m₀（全領域で同じ値）。省略すると 1
+                   全領域で同じ質量なら、境界で φ と φ' が連続という条件はそのまま使える
 
     未知数と方程式の数え上げ（教科書 5.1 の「数え上げ」と同じ考え方）
       - 各領域に係数が2個 → 2(M+1) 個
@@ -217,7 +223,9 @@ def solve_scattering(energy: float, boundaries, potentials) -> Scattering:
 
     # 各領域の波数kを計算する。
     # wave_number() により自動的に E < V の領域では k = iρ となる
-    ks = tuple(wave_number(energy, v) for v in vs)
+    if mass_ratio <= 0:
+        raise ValueError(f"質量の比 mass_ratio は正にしてください（mass_ratio = {mass_ratio}）")
+    ks = tuple(wave_number(energy, v, mass_ratio) for v in vs)
     if abs(ks[0]) < K_ZERO:
         raise ValueError(
             f"E = {energy} eV が左端のポテンシャル V = {vs[0]} eV に近すぎて、入射波 e^(ikx) が作れません"
@@ -431,13 +439,63 @@ def period(energy: float) -> float:
     return 2 * np.pi * HBAR_EV_FS / energy
 
 
-def spectrum(energies, boundaries, potentials) -> tuple[np.ndarray, np.ndarray]:
+def spectrum(energies, boundaries, potentials, mass_ratio: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
     """
     エネルギーの配列 energies [eV] それぞれについて R, T を求め、(R の配列, T の配列) を返す。
-    各エネルギーで solve_scattering を1回ずつ呼ぶ（力技）。
+    各エネルギーで solve_scattering を1回ずつ呼ぶ（力技）。mass_ratio は solve_scattering と同じ。
     """
-    solutions = [solve_scattering(e, boundaries, potentials) for e in energies]
+    solutions = [solve_scattering(e, boundaries, potentials, mass_ratio) for e in energies]
     # 反射率 R と透過率 T の配列を作る
     reflectances = np.array([s.reflectance for s in solutions])
     transmittances = np.array([s.transmittance for s in solutions])
     return reflectances, transmittances
+
+
+def find_resonances(
+    boundaries,
+    potentials,
+    e_low: float,
+    e_high: float,
+    mass_ratio: float = 1.0,
+    min_transmittance: float = 0.99,
+    points: int = 20001,
+) -> tuple[float, ...]:
+    """
+    E の範囲 [e_low, e_high] [eV] で、透過率 T が山（極大）になり、かつ T ≥ min_transmittance となる
+    エネルギー（共鳴エネルギー）を小さい順に返す。
+
+    探し方（力技）
+      1. 範囲を points 点に区切って T を計算し、両隣より大きい点（山の候補）を見つける
+      2. 各候補の両隣の点の間で「黄金分割探索」を行い、T が最大になる E を 10^-12 eV の精度まで絞り込む
+         （黄金分割探索: 区間を一定の比率で狭めながら最大の位置を挟み込んでいく方法。微分を使わずに済む）
+
+    注意: 共鳴ピークの幅が格子の間隔より細いと、手順1 で見落とすことがある。そのときは points を増やす。
+    """
+    energies = np.linspace(max(e_low, 1e-12), e_high, points)
+    transmittances = spectrum(energies, boundaries, potentials, mass_ratio)[1]
+    is_peak = (transmittances[1:-1] >= transmittances[:-2]) & (transmittances[1:-1] >= transmittances[2:])
+    candidates = np.flatnonzero(is_peak) + 1  # 両端を除いた配列で探したので、番号を1つずらす
+
+    def t_of(e):
+        return solve_scattering(e, boundaries, potentials, mass_ratio).transmittance
+
+    peaks = (_golden_section_max(t_of, energies[i - 1], energies[i + 1]) for i in candidates)
+    return tuple(e for e in peaks if t_of(e) >= min_transmittance)
+
+
+def _golden_section_max(func, low: float, high: float, tol: float = 1e-12) -> float:
+    """区間 [low, high] で山が1つだけの関数 func が最大になる位置を、黄金分割探索で求める"""
+    ratio = (np.sqrt(5) - 1) / 2  # 黄金比 0.618...
+    a, b = low, high
+    c, d = b - ratio * (b - a), a + ratio * (b - a)
+    fc, fd = func(c), func(d)
+    while b - a > tol:
+        if fc >= fd:  # 最大は [a, d] にある
+            b, d, fd = d, c, fc
+            c = b - ratio * (b - a)
+            fc = func(c)
+        else:  # 最大は [c, b] にある
+            a, c, fc = c, d, fd
+            d = a + ratio * (b - a)
+            fd = func(d)
+    return (a + b) / 2
