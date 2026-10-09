@@ -1,7 +1,7 @@
 """
 scattering.py — 1次元ポテンシャルによる反射と透過の計算（描画はしない）
 
-教科書: 猪木慶治・河合光『基礎量子力学』第5章
+参考: 猪木慶治・河合光『基礎量子力学』第5章
 
 やっていること
 --------------
@@ -54,7 +54,8 @@ K_ZERO = 1e-6
 # ---------------------------------------------------------------------------
 class Scattering(NamedTuple):
     """
-    solve_scattering() の結果。NamedTuple は「名前付きで値を持てるタプル」で、作った後に書き換えられない。
+    solve_scattering() の結果。
+    NamedTuple は「名前付きで値を持てるタプル」で、作った後に書き換えられないので型安全
 
     領域の番号は左から 0, 1, ..., M（境界が M 個なら領域は M+1 個）。
 
@@ -80,6 +81,8 @@ class Scattering(NamedTuple):
 # ---------------------------------------------------------------------------
 # ポテンシャルの形を作る
 # ---------------------------------------------------------------------------
+
+# 単純な階段型ポテンシャル用の関数。境界の位置と各領域のポテンシャルを返す。
 def step(height: float) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """
     階段型ポテンシャル（教科書 図5.1, 図5.6）: x < 0 で V = 0、x > 0 で V = height。
@@ -93,6 +96,7 @@ def barrier_array(
     count: int, height: float, width: float, gap: float
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """
+    障壁の数や高さ、幅、間隔を指定すると、境界の位置と各領域のポテンシャルを返す関数
     高さ height、幅 width の長方形の山を、間隔 gap で count 個並べたポテンシャル。
 
     count = 1 が教科書 図5.8 の長方形のポテンシャル障壁（0 < x < a で V = V_0）。
@@ -106,6 +110,7 @@ def barrier_array(
 
     戻り値は (境界の位置, 各領域のポテンシャル)。count = 0 なら境界なし（自由空間）。
     """
+    
     if count < 0:
         raise ValueError(f"山の個数は 0 以上にしてください（count = {count}）")
     if count > 0 and width <= 0:
@@ -130,23 +135,25 @@ def potential_profile(x, boundaries, potentials) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # 各領域の解
 # ---------------------------------------------------------------------------
+
 def wave_number(energy: float, potential: float) -> complex:
     """
-    領域の波数 k = √(2m(E − V)) / ħ を返す。
+        領域の波数 k = √(2m(E − V)) / ħ を返す関数。
 
-    E > V : k は実数。                                   教科書 (5.2)(5.4)(5.36)
-    E < V : k = iρ（純虚数）, ρ = √(2m(V − E)) / ħ。       教科書 (5.15)(5.24)
-            このとき e^{ikx} = e^{-ρx}（減衰）、e^{-ikx} = e^{+ρx}（増大）となり、
-            第4章の「染み出し」と同じ形が自動的に出てくる。だから E と V の大小で場合分けしなくてよい。
+        E > V : k は実数で、k = √(2m(E − V)) / ħがそのまま計算される 教科書 (5.2)(5.4)(5.36)
+        E < V : k = iρ（純虚数）, ρ = √(2m(V − E)) / ħ。       教科書 (5.15)(5.24)
+
     """
     # complex(...) にしておくと、負の数の平方根が i√|…| として計算される（虚部 +0 なので +i 側になる）
+    # そのためE,Vの大小で場合分けは不要になっている。勝手に E < V のときは k = iρ となる。
     return cmath.sqrt(complex((energy - potential) / HBAR2_OVER_2M))
 
 
 def _basis(k: complex, x_local):
     """
     波数 k の領域での2つの基本解 f_1, f_2 と、その微分 f_1', f_2' を返す。
-
+    係数は後で連続条件を求めるときに使うので、ここではまだ登場しない
+    
     x_local は「その領域の原点」から測った位置。領域ごとに原点をずらすのは、
     e^{±ρx} を遠い x で評価すると値が極端に大きく/小さくなり、数値誤差が増えるのを防ぐため。
     （原点をずらしても係数に定数倍がかかるだけで、|係数|² で決まる R, T は変わらない）
@@ -157,11 +164,18 @@ def _basis(k: complex, x_local):
             （e^{ikx} と e^{-ikx} は k → 0 で両方 1 になって区別がつかなくなるため）
     """
     x_local = np.asarray(x_local, dtype=complex)
-    if abs(k) < K_ZERO:
+    
+    # kの絶対値が小さい場合(= Eが小さい場合)は、k = 0 として扱う。(e^{ikx} と e^{-ikx} が同じ関数 1 になってしまうため。)
+    if abs(k) < K_ZERO: 
         one = np.ones_like(x_local)
         return one, x_local, np.zeros_like(x_local), one
+    
+    # k ≠ 0 の場合は、e^{ikx} と e^{-ikx} を返す。
     e_plus = np.exp(1j * k * x_local)
     e_minus = np.exp(-1j * k * x_local)
+    
+    # e^ikxと e^{-ikx}、そしてその微分を返す。
+    # e^{ikx} の微分は 1j * k * e^{ikx}、e^{-ikx} の微分は -1j * k * e^{-ikx} となる。
     return e_plus, e_minus, 1j * k * e_plus, -1j * k * e_minus
 
 
@@ -192,25 +206,36 @@ def solve_scattering(energy: float, boundaries, potentials) -> Scattering:
       - 右端の「右から来る波」の係数は 0（左からだけ入射させる実験だから）       → −1
       - 残りの未知数は 2M 個。境界1つにつき連続条件が2本（φ と φ'）→ 方程式も 2M 本
       未知数と方程式の数がちょうど釣り合うので、どんな E でも解が1つ決まる（E は量子化されない）。
+      なおA=1と決めているため、あくまでも係数の比が求められているだけで、絶対値がもとまるわけではないことに注意
     """
+    
+    # 入力を float に変換して、型チェックと物理的な前提条件のチェック
+    # xbは境界の位置、vsは各領域のポテンシャルである
     xb = tuple(float(x) for x in boundaries)
     vs = tuple(float(v) for v in potentials)
     _validate(energy, xb, vs)
 
+    # 各領域の波数kを計算する。
+    # wave_number() により自動的に E < V の領域では k = iρ となる
     ks = tuple(wave_number(energy, v) for v in vs)
     if abs(ks[0]) < K_ZERO:
         raise ValueError(
             f"E = {energy} eV が左端のポテンシャル V = {vs[0]} eV に近すぎて、入射波 e^(ikx) が作れません"
         )
-
+    # 境界の数を数えておく。境界がない場合は自由な散乱状態になり、自明解 R = 0, T = 1 となる
     m = len(xb)
     if m == 0:
-        # 境界がない（自由空間）: 入射波がそのまま進むだけ。R = 0, T = 1
+        # 境界がない（自由空間）: 入射波がそのまま進むだけ。R = 0, T = 1。自明。
         return Scattering(energy, xb, vs, ks, ((1.0 + 0j, 0j),), 0.0, 1.0)
 
+    # 接続条件を行列形式で並べて連立方程式を作る
+    # 右側にA = 1 の項を移項して、未知数だけの連立方程式にする
     matrix, rhs = _continuity_equations(xb, ks)
+    
     try:
+        # numpyの線形代数ライブラリを使って連立方程式を解く
         unknowns = np.linalg.solve(matrix, rhs)
+        
     except np.linalg.LinAlgError as err:
         raise ValueError(
             f"連続条件の連立方程式が解けませんでした（E = {energy} eV, 境界 = {xb}, V = {vs}）"
@@ -251,7 +276,7 @@ def _validate(energy: float, xb: tuple[float, ...], vs: tuple[float, ...]) -> No
 
 def _continuity_equations(xb: tuple[float, ...], ks: tuple[complex, ...]):
     """
-    全境界の連続条件を、連立一次方程式 matrix @ unknowns = rhs の形に並べる。
+    全境界の連続条件を、連立一次方程式 matrix × unknowns = rhs の形に並べる。
 
     境界 n（領域 n と n+1 の間, 位置 x_n）での連続条件:
         φ_n(x_n)  = φ_{n+1}(x_n)        教科書 (5.6)(5.28)(5.30) と同じ
@@ -262,12 +287,15 @@ def _continuity_equations(xb: tuple[float, ...], ks: tuple[complex, ...]):
         → [B, c_10, c_11, c_20, c_21, ..., C]
     既知の A = 1 の項は右辺 rhs に移し、捨てた右端の第2係数（D = 0）の項は書かない。
     """
+    
+    # 初期化
     m = len(xb)
     last = m  # 右端の領域の番号
-    origins = _region_origins(xb)
-    matrix = np.zeros((2 * m, 2 * m), dtype=complex)
-    rhs = np.zeros(2 * m, dtype=complex)
+    origins = _region_origins(xb) # 各領域の原点
+    matrix = np.zeros((2 * m, 2 * m), dtype=complex) # 未知数B,C, ...にかかる係数の行列
+    rhs = np.zeros(2 * m, dtype=complex) # 右辺の既知の項（A = 1 の項を移項したもの）
 
+    # 各境界での連続条件を0埋めした行列matrix, rhsに書き込んでいく
     for n, x in enumerate(xb):
         # sign = +1: 境界の左側の領域 n、sign = −1: 右側の領域 n+1（移項したので符号が逆）
         for region, sign in ((n, +1.0), (n + 1, -1.0)):
@@ -284,6 +312,9 @@ def _continuity_equations(xb: tuple[float, ...], ks: tuple[complex, ...]):
                     column = 2 * region + i - 1
                     matrix[2 * n, column] = sign * value
                     matrix[2 * n + 1, column] = sign * slope
+    
+    # 最終的に係数行列と右辺ベクトルを返す。
+    # これを Numpyの線形代数ライブラリで解くと、未知数の係数が求まる
     return matrix, rhs
 
 
@@ -315,13 +346,22 @@ def _transmittance(coefficients, ks) -> float:
 def wavefunction(x, solution: Scattering) -> np.ndarray:
     """
     位置 x（配列可）での波動関数 φ(x) を返す（複素数。入射波の振幅 A = 1）。
-
+    unknowns から係数を取り出して、波動関数 φ_j = c_j1·f_1 + c_j2·f_2 を組み立てる。
     x がどの領域に入るかを調べ、その領域の係数と基本解を組み立てる。
     """
+    # 位置xを取り出してfloat型の配列に変換
     x = np.asarray(x, dtype=float)
+    
+    # どの領域に入るかを調べる。np.searchsorted() は、境界の配列に対して、x がどの位置に入るかを返す。
     region = np.searchsorted(np.asarray(solution.boundaries, dtype=float), x, side="right")
+    
+    # 各領域の原点を求める
     origins = _region_origins(solution.boundaries)
+    
+    # 波動関数 φ(x) の値を格納する配列を0埋めで初期化。もちろん複素数型
     phi = np.zeros(x.shape, dtype=complex)
+    
+    # 各領域の係数と基本解を組み立ててphiに代入していく
     for j, (k, (c1, c2)) in enumerate(zip(solution.wave_numbers, solution.coefficients)):
         inside = region == j
         f1, f2, _, _ = _basis(k, x[inside] - origins[j])
@@ -381,6 +421,8 @@ def time_evolve(phi, energy: float, t: float) -> np.ndarray:
       一方、実部 Re ψ は時間とともに変わり、進行波 e^{ikx} の部分は右へ流れ、
       e^{ikx} と e^{-ikx} が同じ大きさで重なった部分はその場で上下する（定在波）。
     """
+    
+    # 
     return np.asarray(phi, dtype=complex) * np.exp(-1j * energy * t / HBAR_EV_FS)
 
 
@@ -395,6 +437,7 @@ def spectrum(energies, boundaries, potentials) -> tuple[np.ndarray, np.ndarray]:
     各エネルギーで solve_scattering を1回ずつ呼ぶ（力技）。
     """
     solutions = [solve_scattering(e, boundaries, potentials) for e in energies]
+    # 反射率 R と透過率 T の配列を作る
     reflectances = np.array([s.reflectance for s in solutions])
     transmittances = np.array([s.transmittance for s in solutions])
     return reflectances, transmittances
