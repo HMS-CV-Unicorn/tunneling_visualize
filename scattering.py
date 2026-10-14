@@ -156,13 +156,13 @@ def wave_number(energy: float, potential: float, mass_ratio: float = 1.0) -> com
 def _basis(k: complex, x_local):
     """
     波数 k の領域での2つの基本解 f_1, f_2 と、その微分 f_1', f_2' を返す。
-    係数は後で連続条件を求めるときに使うので、ここではまだ登場しない
+    係数は後で連続条件を求めるときに使うので、ここではまだ使用しない
     
     x_local は「その領域の原点」から測った位置。領域ごとに原点をずらすのは、
     e^{±ρx} を遠い x で評価すると値が極端に大きく/小さくなり、数値誤差が増えるのを防ぐため。
     （原点をずらしても係数に定数倍がかかるだけで、|係数|² で決まる R, T は変わらない）
 
-    k ≠ 0 : f_1 = e^{ikx}, f_2 = e^{-ikx}                      教科書 (5.3)(5.5)
+    k ≠ 0 : f_1 = e^{ikx}, f_2 = e^{-ikx}
     k = 0 : φ'' = 0 の一般解 φ = c_1 + c_2 x を使う。
             特性方程式 λ² = 0 が重解 λ = 0 を持つ場合の基本解 {1, x} にあたる。
             （e^{ikx} と e^{-ikx} は k → 0 で両方 1 になって区別がつかなくなるため）
@@ -269,12 +269,18 @@ def solve_scattering(energy: float, boundaries, potentials, mass_ratio: float = 
 
 def _validate(energy: float, xb: tuple[float, ...], vs: tuple[float, ...]) -> None:
     """入力の形と物理的な前提をチェックする。おかしければ理由付きで ValueError を出す。"""
+    
+    # 境界の数と potentialの数が合っているかをチェックする
     if len(vs) != len(xb) + 1:
         raise ValueError(
             f"領域の数（ポテンシャル {len(vs)} 個）は境界の数（{len(xb)} 個）+ 1 でなければなりません"
         )
+    
+    # 境界の位置が左から順に並んでいるかをチェックする
     if any(right <= left for left, right in zip(xb, xb[1:])):
         raise ValueError(f"境界の位置は左から順に、重ならないように並べてください: {xb}")
+    
+    # 入射波のエネルギーが左端のポテンシャルより大きいか(つまりエネルギーが負でないか)をチェックする
     if energy <= vs[0]:
         raise ValueError(
             f"E = {energy} eV が左端のポテンシャル V = {vs[0]} eV 以下です。"
@@ -287,8 +293,8 @@ def _continuity_equations(xb: tuple[float, ...], ks: tuple[complex, ...]):
     全境界の連続条件を、連立一次方程式 matrix × unknowns = rhs の形に並べる。
 
     境界 n（領域 n と n+1 の間, 位置 x_n）での連続条件:
-        φ_n(x_n)  = φ_{n+1}(x_n)        教科書 (5.6)(5.28)(5.30) と同じ
-        φ_n'(x_n) = φ_{n+1}'(x_n)       教科書 (5.7)(5.29)(5.31) と同じ
+        φ_n(x_n)  = φ_{n+1}(x_n)       
+        φ_n'(x_n) = φ_{n+1}'(x_n)
     これを「左辺 − 右辺 = 0」の形に移項して、行列の 2n 行目と 2n+1 行目に書き込む。
 
     未知数の並び順: 領域 j の i 番目の係数（i = 0, 1）は列 2j + i − 1 に入る。
