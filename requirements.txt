@@ -3,3 +3,4 @@
 numpy>=2.0        # 配列計算・連立一次方程式
 matplotlib>=3.9   # グラフとスライダー（3.9 以上: スライダーの範囲を変える処理で使う機能のため）
 pytest>=8         # 検証テストの実行
+ipykernel>=6      # VS Code のノートブック（.ipynb）からこの .venv の Python を動かす部品

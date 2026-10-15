@@ -18,6 +18,8 @@ viewer.py — 反射と透過をスライダーで動かして見る
     T(E) の図を拡大すると、表示範囲の中で T(E) を計算し直し、E スライダーの範囲もその表示範囲になる
   - T(E) の図をクリックすると、その E に移動する（ツールバーの拡大・移動モード中を除く）
   - 「T, R を対数表示」で縦軸を対数にすると、トンネル効果の非常に小さい T も見える
+  - 入力欄の右のボタンで単位を切り替えられる。E 行のボタンは E と V₀ を eV ⇄ meV、a 行のボタンは a, b, x を nm ⇄ Å。
+    計算は常に eV・nm で行い、入力欄・ラベル・目盛りの表示だけを換算する
 
 計算はすべて scattering.py に任せ、このファイルは「スライダーの値を読む → 計算を呼ぶ → 描き直す」だけを担当する。
 
@@ -28,6 +30,7 @@ viewer.py — 反射と透過をスライダーで動かして見る
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider, TextBox
 
 import scattering as sc
@@ -73,15 +76,27 @@ FRAMES_PER_PERIOD = 90
 FRAME_INTERVAL_MS = 33  # 1コマの間隔 [ミリ秒]（約 30 コマ/秒）
 
 # スライダーの設定: (表示名, 最小, 最大, 初期値, 刻み)
+# 最小・最大・初期値・刻みは計算に使う単位（エネルギーは eV、長さは nm）で書く。表示名の単位は PARAMETER_KIND から付ける。
 # E の範囲は T(E) の図の表示範囲に合わせて変わる。刻みは付けない（拡大したとき細かく動かせるように）
 SLIDER_SPECS = {
-    "energy": ("エネルギー E [eV]", ENERGY_VIEW[0], ENERGY_VIEW[1], 0.60, None),
-    "height": ("高さ V₀ [eV]", -3.0, 5.0, 1.00, 0.05),
-    "width": ("幅 a [nm]", 0.05, 3.0, 0.50, 0.05),
+    "energy": ("エネルギー E", ENERGY_VIEW[0], ENERGY_VIEW[1], 0.60, None),
+    "height": ("高さ V₀", -3.0, 5.0, 1.00, 0.05),
+    "width": ("幅 a", 0.05, 3.0, 0.50, 0.05),
     "count": ("個数 N", 0, 5, 1, 1),
-    "gap": ("間隔 b [nm]", 0.05, 5.0, 1.00, 0.05),
+    "gap": ("間隔 b", 0.05, 5.0, 1.00, 0.05),
     "mass": ("有効質量 m*/m₀", 0.01, 2.0, 1.00, 0.01),  # 1 なら自由電子。半導体中の電子なら 0.1 程度
 }
+
+# 表示の単位。計算（scattering.py）はいつも eV・nm で行い、画面に出す数値と入力された数値だけを換算する。
+# 値は「計算の単位で 1 のとき、表示の単位でいくつか」（1 eV = 1000 meV、1 nm = 10 Å）。各組の先頭が最初の表示単位
+UNIT_SCALES = {
+    "energy": {"eV": 1.0, "meV": 1000.0},
+    "length": {"nm": 1.0, "Å": 10.0},
+}
+# どのパラメータがどの種類の量か。E と V₀ は大小を比べるので同じ単位、a と b も x 軸と同じ単位で切り替える
+# （個数 N と有効質量 m*/m₀ は単位のない量なので、ここには載せない）
+PARAMETER_KIND = {"energy": "energy", "height": "energy", "width": "length", "gap": "length"}
+INITIAL_UNITS = {kind: next(iter(scales)) for kind, scales in UNIT_SCALES.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -162,14 +177,33 @@ def transmitted_amplitude_label(result: sc.Scattering) -> str:
     return f"透過波の振幅 |C| = {amplitude:.2f}（T = (k₂/k₁)|C|²）"
 
 
-def parse_parameter(key: str, text: str) -> float:
-    """
-    入力欄の文字列を数値に変換する。数値として読めない、または物理的に意味のない値なら、
-    理由を書いた ValueError を出す（呼び出し側で画面に表示する）。
-    """
+def other_unit(kind: str, unit: str) -> str:
+    """切り替えボタンを押したときの次の単位（eV ⇄ meV、nm ⇄ Å）"""
+    (other,) = (name for name in UNIT_SCALES[kind] if name != unit)
+    return other
+
+
+def unit_scale(key: str, units: dict) -> float:
+    """パラメータ key を表示の単位に直すときに掛ける数。単位のない量（N, m*/m₀）は 1"""
+    kind = PARAMETER_KIND.get(key)
+    return 1.0 if kind is None else UNIT_SCALES[kind][units[kind]]
+
+
+def parameter_label(key: str, units: dict) -> str:
+    """スライダーの表示名。単位のある量には、いま選ばれている単位を [ ] で付ける"""
     name = SLIDER_SPECS[key][0]
+    kind = PARAMETER_KIND.get(key)
+    return name if kind is None else f"{name} [{units[kind]}]"
+
+
+def parse_parameter(key: str, text: str, units: dict) -> float:
+    """
+    入力欄の文字列を数値に変換し、計算の単位（eV・nm）に直して返す。数値として読めない、
+    または物理的に意味のない値なら、理由を書いた ValueError を出す（呼び出し側で画面に表示する）。
+    """
+    name = parameter_label(key, units)
     try:
-        value = float(text)
+        value = float(text) / unit_scale(key, units)
     except ValueError:
         raise ValueError(f"{name}: 「{text}」は数値として読めません") from None
     if not np.isfinite(value):
@@ -186,9 +220,14 @@ def parse_parameter(key: str, text: str) -> float:
     return value
 
 
-def format_parameter(key: str, value: float) -> str:
-    """入力欄に表示する文字列。個数は整数、それ以外は有効数字 6 桁"""
-    return str(int(value)) if key == "count" else f"{value:.6g}"
+def format_parameter(key: str, value: float, units: dict) -> str:
+    """入力欄に表示する文字列。value は計算の単位（eV・nm）の値で、表示の単位に直して書く。個数は整数、それ以外は有効数字 6 桁"""
+    return str(int(value)) if key == "count" else f"{value * unit_scale(key, units):.6g}"
+
+
+def unit_button_label(kind: str, units: dict) -> str:
+    """単位切り替えボタンの文字。押すとどの単位になるかを書く"""
+    return f"→ {other_unit(kind, units[kind])}"
 
 
 def wave_axis_label(show_wave: bool, show_density: bool) -> str:
@@ -218,6 +257,19 @@ def set_slider_range(slider: Slider, low: float, high: float) -> None:
     slider.ax.set_xlim(low, high)
     slider.poly.set_x(low)
     slider.poly.set_width(slider.val - low)
+
+
+def set_tick_unit(axis, scale: float) -> None:
+    """
+    軸の目盛りの数字を scale 倍して表示する（データは計算の単位のまま。例: 0.5 eV の目盛りを「500」と書く）。
+    scale = 1 なら matplotlib 標準の書き方（ScalarFormatter）に戻す。
+    FuncFormatter は「目盛りの値 → 表示する文字」の変換を自分で決める部品。
+    """
+    if scale == 1.0:
+        axis.set_major_formatter(ScalarFormatter())
+    else:
+        # マイナスは標準の目盛りと同じ記号「−」（ハイフンより長い）にそろえる
+        axis.set_major_formatter(FuncFormatter(lambda value, _pos: f"{value * scale:.6g}".replace("-", "\u2212")))
 
 
 def show_text_silently(box: TextBox, text: str) -> None:
@@ -319,9 +371,22 @@ def build_viewer():
     sliders, boxes = {}, {}
     for row, (key, (label, vmin, vmax, vinit, vstep)) in enumerate(SLIDER_SPECS.items()):
         y = 0.135 - 0.025 * row
-        sliders[key] = Slider(fig.add_axes((0.20, y, 0.56, 0.02)), label, vmin, vmax, valinit=vinit, valstep=vstep)
+        sliders[key] = Slider(
+            fig.add_axes((0.20, y, 0.56, 0.02)), parameter_label(key, INITIAL_UNITS), vmin, vmax, valinit=vinit, valstep=vstep
+        )
         sliders[key].valtext.set_visible(False)  # 値はスライダー横の文字ではなく入力欄に出す
-        boxes[key] = TextBox(fig.add_axes((0.79, y - 0.003, 0.09, 0.026)), "", initial=format_parameter(key, vinit))
+        boxes[key] = TextBox(
+            fig.add_axes((0.79, y - 0.003, 0.09, 0.026)), "", initial=format_parameter(key, vinit, INITIAL_UNITS)
+        )
+
+    # 単位の切り替えボタン。エネルギーは E の行、長さは a の行の入力欄の右に置く
+    # （E 行のボタンは V₀ も、a 行のボタンは b と x 軸も一緒に切り替える）
+    unit_rows = {"energy": "energy", "length": "width"}
+    unit_buttons = {}
+    for kind, key in unit_rows.items():
+        y = 0.135 - 0.025 * list(SLIDER_SPECS).index(key)
+        unit_buttons[kind] = Button(fig.add_axes((0.89, y - 0.003, 0.07, 0.026)), unit_button_label(kind, INITIAL_UNITS))
+        unit_buttons[kind].label.set_fontsize(9)
 
     # 画面の状態
     #   mode    : どのポテンシャルの形が選ばれているか
@@ -332,6 +397,7 @@ def build_viewer():
     #   playing : 再生中かどうか
     #   guide_reflected, guide_transmitted : 振幅の目安線を引けるか（自由空間や、右端で波が進まないときは引かない）
     #   log     : T(E) の図の縦軸が対数表示かどうか
+    #   units   : 表示の単位 {"energy": "eV" か "meV", "length": "nm" か "Å"}
     state = {
         "mode": MODE_BARRIERS,
         "phase": 0.0,
@@ -345,6 +411,7 @@ def build_viewer():
         "guide_reflected": False,
         "guide_transmitted": False,
         "log": False,
+        "units": dict(INITIAL_UNITS),
     }
 
     def current_params():
@@ -431,7 +498,8 @@ def build_viewer():
         line_pot.set_data(xs, vs)
         line_energy.set_data([x_min, x_max], [energy, energy])
         label_energy.set_position((x_min + 0.05, energy))
-        label_energy.set_text(f"E = {energy:.6g} eV")
+        energy_unit = state["units"]["energy"]
+        label_energy.set_text(f"E = {energy * UNIT_SCALES['energy'][energy_unit]:.6g} {energy_unit}")
         # x の範囲はポテンシャルの形が変わったときだけ設定し直す。
         # E を動かすたびに設定すると、ツールバーで拡大した表示が元に戻ってしまうため
         if state["x_range"] != (x_min, x_max):
@@ -485,7 +553,7 @@ def build_viewer():
     # --- スライダー・入力欄が動いたときに呼ばれる関数 ---
     def sync_box(key):
         """スライダーの値を入力欄にも表示する"""
-        show_text_silently(boxes[key], format_parameter(key, sliders[key].val))
+        show_text_silently(boxes[key], format_parameter(key, sliders[key].val, state["units"]))
 
     def on_energy_change(_value):
         sync_box("energy")
@@ -504,7 +572,7 @@ def build_viewer():
         おかしな値なら、何も変えずに理由を右上に表示し、入力欄を今の値に戻す。
         """
         try:
-            value = parse_parameter(key, text)
+            value = parse_parameter(key, text, state["units"])
         except ValueError as err:
             error_text.set_text(f"入力エラー: {err}")
             sync_box(key)
@@ -574,6 +642,35 @@ def build_viewer():
             ax_spec.set_ylim(-0.03, 1.03)
         fig.canvas.draw_idle()
 
+    def apply_units():
+        """
+        いまの表示単位に合わせて、スライダーの表示名・入力欄・軸ラベル・目盛り・ボタンの文字を書き直す。
+        計算の値（スライダーの中身）は eV・nm のまま変えない。
+        """
+        units = state["units"]
+        for key, slider in sliders.items():
+            slider.label.set_text(parameter_label(key, units))
+            sync_box(key)
+        for kind, button in unit_buttons.items():
+            button.label.set_text(unit_button_label(kind, units))
+        energy_scale = UNIT_SCALES["energy"][units["energy"]]
+        length_scale = UNIT_SCALES["length"][units["length"]]
+        # 上2つの図は x 軸を共有しているので、中段の目盛りを変えれば上段も同じになる
+        set_tick_unit(ax_wave.xaxis, length_scale)
+        set_tick_unit(ax_pot.yaxis, energy_scale)
+        set_tick_unit(ax_spec.xaxis, energy_scale)
+        ax_wave.set_xlabel(f"x [{units['length']}]")
+        ax_pot.set_ylabel(f"V [{units['energy']}]")
+        ax_spec.set_xlabel(f"E [{units['energy']}]")
+
+    def on_unit_toggle(kind):
+        """単位切り替えボタンが押されたとき。表示だけを換算するので、計算し直すのは E のラベルのためだけ"""
+        state["units"] = {**state["units"], kind: other_unit(kind, state["units"][kind])}
+        error_text.set_text("")  # 前の単位で書かれた入力エラーは紛らわしいので消す
+        apply_units()
+        redraw_wave()
+        fig.canvas.draw_idle()
+
     # --- 再生 ---
     # タイマーは「一定間隔で関数を呼んでくれる」matplotlib の部品。再生中は毎コマ位相を少し進めて描き直す
     timer = fig.canvas.new_timer(interval=FRAME_INTERVAL_MS)
@@ -602,6 +699,8 @@ def build_viewer():
     timer.add_callback(on_tick)
     play_button.on_clicked(on_play)
     reset_button.on_clicked(on_reset)
+    for kind, button in unit_buttons.items():
+        button.on_clicked(lambda _event, kind=kind: on_unit_toggle(kind))
     check.on_clicked(on_check)
     log_check.on_clicked(on_log_toggle)
     radio.on_clicked(on_mode_change)
@@ -625,6 +724,7 @@ def build_viewer():
         "log_check": log_check,
         "play": play_button,
         "reset": reset_button,
+        "units": unit_buttons,
         "timer": timer,
     }
 
