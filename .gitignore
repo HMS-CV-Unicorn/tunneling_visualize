@@ -15,3 +15,6 @@ __pycache__/
 # macOS
 .DS_Store
 figures/
+
+# 実験用スクリプト (公開しない)
+scripts/ 
