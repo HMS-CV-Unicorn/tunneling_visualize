@@ -378,3 +378,50 @@ def test_effective_mass_equals_stretched_lengths():
             energy, *sc.barrier_array(2, REF_HEIGHT, math.sqrt(m) * REF_WIDTH, math.sqrt(m) * REF_GAP)
         )
         assert with_mass.transmittance == pytest.approx(stretched.transmittance, rel=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# 11. 共鳴ピークの半値全幅
+# ---------------------------------------------------------------------------
+def coarse_peak(boundaries, potentials, e_low, e_high, points, mass_ratio=1.0):
+    """テスト用: 粗い格子で T(E) を計算し、一番高い山の点の番号を返す"""
+    energies = np.linspace(e_low, e_high, points)
+    transmittances = sc.spectrum(energies, boundaries, potentials, mass_ratio)[1]
+    return energies, transmittances, int(np.argmax(transmittances[1:-1])) + 1
+
+
+def test_half_maximum_width_edges_are_at_half():
+    """求めた左右の E で、T がちょうど頂上の半分になっている"""
+    energies, transmittances, i = coarse_peak(*reference_potential(), 60 * MEV, 100 * MEV, 401, REF_MASS)
+    peak = sc.half_maximum_width(energies, transmittances, i, *reference_potential(), REF_MASS)
+    assert peak.t_peak == pytest.approx(1.0, abs=1e-6)  # 対称な2重障壁の共鳴なので完全透過
+    for e in (peak.e_left, peak.e_right):
+        t = sc.solve_scattering(e, *reference_potential(), REF_MASS).transmittance
+        assert t == pytest.approx(peak.t_peak / 2, rel=1e-6)
+    assert peak.e_left < peak.e_peak < peak.e_right
+
+
+def test_half_maximum_width_matches_dense_sampling():
+    """細かい格子で「T ≥ 頂上の半分」の区間の長さを数えた値と、格子の間隔の範囲で一致する"""
+    energies, transmittances, i = coarse_peak(*reference_potential(), 60 * MEV, 100 * MEV, 401, REF_MASS)
+    peak = sc.half_maximum_width(energies, transmittances, i, *reference_potential(), REF_MASS)
+    dense = np.linspace(peak.e_peak - 3 * peak.width, peak.e_peak + 3 * peak.width, 20001)
+    t_dense = sc.spectrum(dense, *reference_potential(), REF_MASS)[1]
+    above = dense[t_dense >= peak.t_peak / 2]
+    step = dense[1] - dense[0]
+    assert above[-1] - above[0] == pytest.approx(peak.width, abs=2 * step)
+
+
+def test_half_maximum_width_outside_range_is_none():
+    """山の裾が計算した範囲の外にあれば、その側は None（幅も None）"""
+    # 共鳴は約 80.6 meV、左の半値は約 79.8 meV。範囲を 80.2 meV からにすると、左の裾が範囲の外になる
+    energies, transmittances, i = coarse_peak(*reference_potential(), 80.2 * MEV, 100 * MEV, 401, REF_MASS)
+    peak = sc.half_maximum_width(energies, transmittances, i, *reference_potential(), REF_MASS)
+    assert peak.e_left is None and peak.e_right is not None
+    assert peak.width is None
+
+
+def test_half_maximum_width_rejects_end_points():
+    energies = np.linspace(0.1, 1.0, 11)
+    with pytest.raises(ValueError, match="両端以外"):
+        sc.half_maximum_width(energies, np.zeros(11), 0, *reference_potential())

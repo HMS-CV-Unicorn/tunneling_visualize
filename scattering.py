@@ -489,6 +489,78 @@ def find_resonances(
     return tuple(e for e in peaks if t_of(e) >= min_transmittance)
 
 
+class PeakWidth(NamedTuple):
+    """
+    half_maximum_width() の結果。透過率 T(E) の山1つの頂上と、半値（頂上の半分の高さ）になる左右の E。
+
+    e_peak, t_peak : 山の頂上のエネルギー [eV] と、そこでの T
+    e_left, e_right: T = t_peak / 2 になるエネルギー [eV]。調べた範囲の中で半分まで下がらなければ None
+    """
+
+    e_peak: float
+    t_peak: float
+    e_left: float | None
+    e_right: float | None
+
+    @property
+    def width(self) -> float | None:
+        """半値全幅 ΔE = e_right − e_left [eV]。左右どちらかが求まらなければ None"""
+        if self.e_left is None or self.e_right is None:
+            return None
+        return self.e_right - self.e_left
+
+
+def half_maximum_width(
+    energies, transmittances, index: int, boundaries, potentials, mass_ratio: float = 1.0
+) -> PeakWidth:
+    """
+    T(E) を計算した点の列 (energies [eV], transmittances) の index 番目の点にある山について、
+    半値全幅（頂上の半分の高さでの山の幅）を求める。頂上が T = 1 の共鳴なら、T = 0.5 になる幅と同じ。
+
+    求め方（find_resonances と同じく力技）
+      1. index の両隣の点の間で黄金分割探索をして、山の頂上 (e_peak, t_peak) を絞り込む
+      2. 頂上から左右に点をたどり、T が t_peak / 2 を下回る最初の区間を見つける
+      3. その区間で二分法（区間を半分ずつ狭めて、T = t_peak / 2 になる E を挟み込む方法）を使い、
+         10^-12 eV の精度まで絞り込む
+    energies の端まで下がらなければ、その側は None（山の裾が範囲の外にある）。
+
+    注意: index は両端以外の点で、両隣より T が大きい（山の候補）こと。
+    """
+    if not 0 < index < len(energies) - 1:
+        raise ValueError(f"山の点 index は両端以外にしてください（index = {index}, 点の数 = {len(energies)}）")
+
+    def t_of(e):
+        return solve_scattering(e, boundaries, potentials, mass_ratio).transmittance
+
+    e_peak = float(_golden_section_max(t_of, energies[index - 1], energies[index + 1]))
+    t_peak = t_of(e_peak)
+    half = t_peak / 2
+
+    def crossing(step: int) -> float | None:
+        """頂上から step（−1 で左、+1 で右）の向きに点をたどり、T = half になる E を返す"""
+        j = index
+        while 0 <= j + step < len(energies):
+            if transmittances[j + step] < half:
+                # [inside, outside] の間で T が half をまたぐ。inside 側は T ≥ half
+                inside, outside = (e_peak if j == index else energies[j]), energies[j + step]
+                return float(_bisect(lambda e: t_of(e) - half, inside, outside))
+            j += step
+        return None
+
+    return PeakWidth(e_peak, t_peak, crossing(-1), crossing(+1))
+
+
+def _bisect(func, inside: float, outside: float, tol: float = 1e-12) -> float:
+    """func(inside) ≥ 0 > func(outside) のとき、func = 0 になる位置を二分法で求める"""
+    while abs(outside - inside) > tol:
+        middle = (inside + outside) / 2
+        if func(middle) >= 0:
+            inside = middle
+        else:
+            outside = middle
+    return (inside + outside) / 2
+
+
 def _golden_section_max(func, low: float, high: float, tol: float = 1e-12) -> float:
     """区間 [low, high] で山が1つだけの関数 func が最大になる位置を、黄金分割探索で求める"""
     ratio = (np.sqrt(5) - 1) / 2  # 黄金比 0.618...

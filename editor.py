@@ -26,6 +26,12 @@ viewer.py（同じ形の障壁をスライダーで並べる版）の発展版�
   - ツールバーの虫眼鏡・十字で拡大・移動（そのモード中は障壁をつかめない。もう一度押してモードを解除する）
   - 「→ meV」「→ Å」ボタンで表示の単位を切り替える（計算は常に eV・nm）
 
+T(E) の図の表示（右下のチェックボックス）
+  - 透過率 T・反射率 R は、それぞれ表示/非表示を切り替えられる
+  - 半値幅: いまの E に一番近い T の山について、頂上の半分の高さでの幅 ΔE（半値全幅）を矢印と数値で示す。
+    頂上が T = 1 の共鳴なら、T = 0.5 になる2点の間の幅。山の裾が表示範囲の外なら、範囲を広げるよう表示する。
+    E をクリックで山の近くに動かせば、その山の幅が出る。計算は scattering.half_maximum_width
+
 計算は scattering.py、障壁の並びの作り変え（ドラッグ・数値入力・追加・削除）は barrier_model.py に任せ、
 このファイルは「マウスや入力欄の操作を受け取る → 新しい並びを作ってもらう → 計算を呼ぶ → 描き直す」だけを担当する。
 色・単位換算・入力欄の読み取りなど viewer.py と共通の部品は、viewer.py から読み込んで使う。
@@ -112,6 +118,11 @@ PART_HINTS = {
 EDIT_KEYS = ("height", "width", "gap")
 TEMPLATE_KEYS = ("count", "height", "width", "gap")
 TEMPLATE_INITIAL = {"count": 2, "height": 0.5, "width": 0.5, "gap": 1.0}  # [個, eV, nm, nm]
+# T(E) の図に表示するものを選ぶチェックボックスの項目
+SHOW_T = "透過率 T"
+SHOW_R = "反射率 R"
+SHOW_WIDTH = "半値幅（いまの E に近い山）"
+
 # 1つの障壁の値の呼び名。障壁ごとに値が違うので、ひな形の V₀・a・b とは別の名前にする
 EDIT_NAMES = {"height": "高さ V", "width": "幅", "gap": "左の間隔"}
 
@@ -147,6 +158,34 @@ def describe_barrier(barriers, index: int, units: dict) -> str:
         if value is not None
     ]
     return f"{index + 1} 番目の障壁\n" + "\n".join(parts)
+
+
+def nearest_peak_index(energies, transmittances, energy: float) -> int | None:
+    """
+    T(E) を計算した点の列の中で、山（両隣以上の点。両端は除く）のうち energy に一番近いものの番号。
+    山がなければ None。T が一定（障壁なしで T = 1）なら山とは呼べないので None。
+    """
+    t = np.asarray(transmittances)
+    if np.ptp(t) == 0:
+        return None
+    is_peak = (t[1:-1] >= t[:-2]) & (t[1:-1] >= t[2:]) & ((t[1:-1] > t[:-2]) | (t[1:-1] > t[2:]))
+    candidates = np.flatnonzero(is_peak) + 1  # 両端を除いた配列で探したので、番号を1つずらす
+    if candidates.size == 0:
+        return None
+    return int(candidates[np.argmin(np.abs(np.asarray(energies)[candidates] - energy))])
+
+
+def peak_width_text(peak: sc.PeakWidth | None, units: dict) -> str:
+    """右側に出す半値幅の説明。単位は表示の単位（eV か meV）"""
+    if peak is None:
+        return "半値幅: 表示範囲に T の山がありません"
+    unit = units["energy"]
+    scale = UNIT_SCALES["energy"][unit]
+    head = f"山の頂上 E = {peak.e_peak * scale:.6g} {unit}（T = {peak.t_peak:.4g}）\n"
+    if peak.width is None:
+        side = "左" if peak.e_left is None else "右"
+        return head + f"半値幅: 山の{side}の裾が表示範囲の外です（T(E) の図を広げてください）"
+    return head + f"半値幅 ΔE = {peak.width * scale:.4g} {unit}（T = {peak.t_peak / 2:.4g} での幅）"
 
 
 def edge_segment(barrier: bm.Barrier, part: str):
@@ -219,10 +258,18 @@ def build_editor():
     (dot_t,) = ax_spec.plot([], [], "o", color=COLOR_RIGHT, ms=8, mec="white", mew=2)
     (dot_r,) = ax_spec.plot([], [], "o", color=COLOR_LEFT, ms=8, mec="white", mew=2)
     marker_energy = ax_spec.axvline(0, color=COLOR_INK, lw=1, ls="--")
+    # 半値幅: 頂上の半分の高さに、左右の E を結ぶ両矢印と ΔE の文字を出す
+    width_arrow = ax_spec.annotate(
+        "", xy=(0, 0), xytext=(0, 0), arrowprops={"arrowstyle": "<->", "color": COLOR_INK, "lw": 1.2}, zorder=5
+    )
+    # ΔE の文字は矢印の右端のすぐ右に出す（細い山でも文字が矢印や軸に重ならないように）
+    width_label = ax_spec.annotate(
+        "", xy=(0, 0), xytext=(6, 0), textcoords="offset points", color=COLOR_INK, fontsize=9, ha="left", va="center", zorder=5
+    )
+    (width_top,) = ax_spec.plot([], [], "v", color=COLOR_INK, ms=6, zorder=5)  # 山の頂上の印
     ax_spec.set_xlim(*ENERGY_VIEW)
     ax_spec.set_ylim(-0.03, 1.03)
     ax_spec.set_ylabel("確率")
-    ax_spec.legend(loc="center right", frameon=False)
     ax_spec.set_title("T(E), R(E)（破線 = いまの E、クリックで E を移動）", loc="left", fontsize=11)
 
     for ax in (ax_pot, ax_wave, ax_spec):
@@ -267,8 +314,12 @@ def build_editor():
     )
     play_button = Button(fig.add_axes((0.735, 0.345, 0.105, 0.032)), "再生")
     reset_button = Button(fig.add_axes((0.855, 0.345, 0.105, 0.032)), "t = 0")
-    readout = fig.text(0.735, 0.325, "", fontsize=11, va="top")
-    log_check = CheckButtons(fig.add_axes((0.735, 0.20, 0.225, 0.035)), (LOG_SCALE,), actives=(False,))
+    readout = fig.text(0.735, 0.33, "", fontsize=10, va="top")
+    width_text = fig.text(0.735, 0.255, "", fontsize=9, va="top")
+    spec_check = CheckButtons(
+        fig.add_axes((0.735, 0.14, 0.225, 0.07)), (SHOW_T, SHOW_R, SHOW_WIDTH), actives=(True, True, True)
+    )
+    log_check = CheckButtons(fig.add_axes((0.735, 0.10, 0.225, 0.035)), (LOG_SCALE,), actives=(False,))
     for spine in log_check.ax.spines.values():
         spine.set_visible(False)
 
@@ -299,6 +350,8 @@ def build_editor():
     #   hover    : カーソルが指している場所（barrier_model.Hit、なければ None）
     #   drag     : ドラッグ中なら {"hit", "origin"（始めたときの並び）, "x0", "v0"（始めた点）}、そうでなければ None
     #   cursor   : いまのカーソルの形（同じ形を何度も設定しないため）
+    #   spectrum : いま描いている T(E), R(E) の点 (energies, reflectances, transmittances)
+    #   peak     : いまの E に一番近い T の山の半値幅（scattering.PeakWidth、山がなければ None）
     #   そのほかは viewer.py と同じ
     state = {
         "barriers": INITIAL_BARRIERS,
@@ -318,6 +371,8 @@ def build_editor():
         "guide_transmitted": False,
         "log": False,
         "units": dict(INITIAL_UNITS),
+        "spectrum": None,
+        "peak": None,
     }
 
     def shown():
@@ -457,6 +512,64 @@ def build_editor():
             f"透過率 T = {result.transmittance:.4g}\n"
             f"R + T    = {result.reflectance + result.transmittance:.10f}"
         )
+        redraw_peak_width()
+
+    def spectrum_shown():
+        """T(E) の図のチェックボックスで選ばれている項目の集合"""
+        return {label.get_text() for label, on in zip(spec_check.labels, spec_check.get_status()) if on}
+
+    def redraw_peak_width():
+        """
+        いまの E に一番近い T の山について、半値全幅を求めて図と文字で示す。
+        E を動かしたとき・T(E) を計算し直したときに呼ぶ（山の探し直しは数 ms で済む）。
+        """
+        energies, _reflectances, transmittances = state["spectrum"]
+        index = nearest_peak_index(energies, transmittances, state["energy"])
+        if index is None or not state["barriers"]:
+            state["peak"] = None
+        else:
+            boundaries, potentials = bm.to_potential(state["barriers"])
+            state["peak"] = sc.half_maximum_width(
+                energies, transmittances, index, boundaries, potentials, sliders["mass"].val
+            )
+        peak = state["peak"]
+        width_text.set_text(peak_width_text(peak, state["units"]))
+        if peak is not None and peak.width is not None:
+            half = peak.t_peak / 2
+            width_arrow.xy, width_arrow.xyann = (peak.e_left, half), (peak.e_right, half)
+            width_label.xy = (peak.e_right, half)
+            unit = state["units"]["energy"]
+            width_label.set_text(f"ΔE = {peak.width * UNIT_SCALES['energy'][unit]:.4g} {unit}")
+        if peak is not None:
+            width_top.set_data([peak.e_peak], [peak.t_peak])
+        apply_spectrum_visibility()
+
+    def apply_spectrum_visibility():
+        """T(E) の図で、チェックボックスで選んだものだけを表示し、凡例と対数表示の縦軸の範囲を合わせる"""
+        selected = spectrum_shown()
+        show_t, show_r = SHOW_T in selected, SHOW_R in selected
+        for artist in (line_t, dot_t):
+            artist.set_visible(show_t)
+        for artist in (line_r, dot_r):
+            artist.set_visible(show_r)
+        # 半値幅は T の山についての量なので、T を表示しているときだけ出す
+        peak = state["peak"]
+        show_width = show_t and SHOW_WIDTH in selected and peak is not None
+        width_top.set_visible(show_width)
+        for artist in (width_arrow, width_label):
+            artist.set_visible(show_width and peak.width is not None)
+        width_text.set_visible(show_t and SHOW_WIDTH in selected)
+        # 凡例は表示している線だけで作り直す（隠した線が凡例に残らないように）
+        visible = [line for line in (line_t, line_r) if line.get_visible()]
+        if visible:
+            ax_spec.legend(handles=visible, loc="center right", frameon=False)
+        elif ax_spec.get_legend() is not None:
+            ax_spec.get_legend().remove()
+        if state["log"] and state["spectrum"] is not None:
+            _energies, reflectances, transmittances = state["spectrum"]
+            values = [t for t, on in ((transmittances, show_t), (reflectances, show_r)) if on]
+            if values:
+                ax_spec.set_ylim(log_lower_limit(np.concatenate(values)), 2.0)
 
     def redraw_spectrum():
         """T(E), R(E) を、いま表示している E の範囲で計算し直す（構造が変わったときと、T(E) の図の範囲が変わったとき）"""
@@ -465,8 +578,9 @@ def build_editor():
         reflectances, transmittances = sc.spectrum(energies, boundaries, potentials, sliders["mass"].val)
         line_t.set_data(energies, transmittances)
         line_r.set_data(energies, reflectances)
-        if state["log"]:
-            ax_spec.set_ylim(log_lower_limit(np.concatenate([transmittances, reflectances])), 2.0)
+        state["spectrum"] = (energies, reflectances, transmittances)
+        if state["energy"] is not None:  # 最初の1回は E がまだ決まっていないので、redraw_wave に任せる
+            redraw_peak_width()  # 対数表示の縦軸の範囲もここで合わせる
 
     def refresh_edit_panel():
         """右上の数値入力欄に、選択中の障壁の値を表示する（選択がなければ空欄）"""
@@ -717,7 +831,7 @@ def build_editor():
         if state["log"]:
             ax_spec.set_yscale("log")
             ax_spec.set_ylabel("確率（対数）")
-            redraw_spectrum()
+            apply_spectrum_visibility()  # 縦軸の下限を、表示している曲線の最小値に合わせて決める
         else:
             ax_spec.set_yscale("linear")
             ax_spec.set_ylabel("確率")
@@ -796,6 +910,7 @@ def build_editor():
     template_button.on_clicked(on_template)
     check.on_clicked(on_check)
     log_check.on_clicked(on_log_toggle)
+    spec_check.on_clicked(lambda _label: (apply_spectrum_visibility(), fig.canvas.draw_idle()))
     sliders["energy"].on_changed(on_energy_change)
     sliders["mass"].on_changed(on_mass_change)
     # key=key は「この行を実行した時点の key を覚えておく」ための書き方（ないと全部最後の key になる）
@@ -830,6 +945,7 @@ def build_editor():
         "units": unit_buttons,
         "check": check,
         "log_check": log_check,
+        "spec_check": spec_check,
         "timer": timer,
         "state": state,
     }
