@@ -196,7 +196,7 @@ def build_editor():
     )
     tooltip.set_visible(False)
     ax_pot.tick_params(labelbottom=False)
-    ax_pot.set_title("ポテンシャル V(x) と電子のエネルギー E — 障壁の辺や中ほどをドラッグ、クリックで選択", loc="left", fontsize=11)
+    ax_pot.set_title("ポテンシャル V(x) と電子のエネルギー E — 障壁の辺や中をドラッグ、クリックで選択", loc="left", fontsize=11)
     filled = []  # 障壁の塗りつぶし（毎回作り直すので、消すために覚えておく）
 
     # --- 2. 波動関数（viewer.py と同じ） ---
@@ -246,7 +246,7 @@ def build_editor():
         button.label.set_fontsize(9)
 
     # --- 右の列: ひな形（等間隔に並べる） ---
-    fig.text(0.735, 0.715, "ひな形: 同じ障壁を等間隔に並べる", fontsize=11, weight="bold")
+    fig.text(0.735, 0.715, "同じ障壁を等間隔に並べる", fontsize=11, weight="bold")
     template_boxes = {}
     for row, key in enumerate(TEMPLATE_KEYS):
         ax_box = fig.add_axes((PANEL_X + 0.06, 0.665 - 0.035 * row, 0.10, 0.028))
@@ -256,7 +256,7 @@ def build_editor():
             initial=format_parameter(key, TEMPLATE_INITIAL[key], INITIAL_UNITS),
         )
         template_boxes[key].label.set_fontsize(9)
-    template_button = Button(fig.add_axes((0.735, 0.51, 0.225, 0.032)), "この形に並べ直す（今の障壁は消える）")
+    template_button = Button(fig.add_axes((0.735, 0.51, 0.225, 0.032)), "この形に並べ直す")
     template_button.label.set_fontsize(9)
 
     # --- 右の列: 表示の切り替え・再生・数値表示 ---
